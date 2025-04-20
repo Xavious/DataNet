@@ -1,0 +1,2 @@
+disableTrigger('enableDisableGetData')
+enableTrigger('disableGetData')
