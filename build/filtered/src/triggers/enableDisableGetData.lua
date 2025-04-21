@@ -1,2 +1,0 @@
-disableTrigger('enableDisableGetData')
-enableTrigger('disableGetData')

@@ -1,5 +1,0 @@
-debugc("endCapture")
-disableTrigger('getData')
-disableTrigger('enableDisableGetData')
-disableTrigger('multiDisableGetData')
-enableTrigger('enableGetData')
