@@ -12,6 +12,10 @@ https://github.com/Xavious/DataNet/releases/tag/v1.0.0
 
 Once installed you use it by clicking datanet links that you see in the game. The browser will automatically popup.
 
+**Mouse Interactions**
+- **single click** - open page in the current tab
+- **right click** - dropdown menu to open in current tab or new tab
+
 **Commands**
 - `showdata` - show the popup window
 - `hidedata` - hide the popup window
@@ -44,6 +48,7 @@ https://gist.github.com/gesslar/c8ad4e3c52ba3df592e99b5388abf029
 <img width="112" height="75" alt="image" src="https://github.com/user-attachments/assets/bc611710-973b-4918-ac0e-323e5cf6328d" />
 
 <img width="111" height="69" alt="image" src="https://github.com/user-attachments/assets/0183a160-4582-497d-b070-d12918e60b0d" />
+
 
 
 
