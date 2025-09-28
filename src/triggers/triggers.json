@@ -81,7 +81,7 @@
               "highlightBG": "#ffff00",
               "patterns": [
                      {
-                            "pattern": "Rewriting as datanet  -c (.*)",
+                            "pattern": "Rewriting as datanet  -c (?<protocol>\\w+) view (?<path>/.*)",
                             "type": "regex"
                      }
               ],
@@ -103,6 +103,10 @@
                      {
                             "pattern": "^---------------------------------------------------------------------------$",
                             "type": "regex"
+                     },
+                     {
+                            "pattern": "[\\d]+ items found",
+                            "type": "regex"
                      }
               ],
               "script": ""
@@ -123,25 +127,9 @@
                      {
                             "pattern": "---------------------------------------------------------------------------",
                             "type": "substring"
-                     }
-              ],
-              "script": ""
-       },
-       {
-              "name": "multiDisableGetData",
-              "isActive": "no",
-              "isFolder": "no",
-              "multiline": "no",
-              "multilineDelta": "0",
-              "matchall": "no",
-              "filter": "no",
-              "fireLength": "0",
-              "highlight": "no",
-              "highlightFG": "#ff0000",
-              "highlightBG": "#ffff00",
-              "patterns": [
+                     },
                      {
-                            "pattern": "[\\d]+ items found",
+                            "pattern": "Listing of: /.+",
                             "type": "regex"
                      }
               ],
