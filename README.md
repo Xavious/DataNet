@@ -6,6 +6,8 @@ A web browser inspired Mudlet package for Legends of the Jedi (LOTJ)
 
 ### Usage
 
+**Known Issue** - Links break when traversing forward or backwards through browser history
+
 Download the latest .mpackage file from the release page and install it like any other Mudlet package.
 
 https://github.com/Xavious/DataNet/releases/tag/v1.0.0
@@ -13,6 +15,14 @@ https://github.com/Xavious/DataNet/releases/tag/v1.0.0
 Once installed you use it by clicking datanet links that you see in the game. The browser will automatically popup.
 
 **Mouse Interactions**
+
+- Add tab button
+- Close tab button
+- Back button
+- Forward button
+- Refresh ( mostly for refreshing links on pages cycled forward or back to)
+
+Links
 - **single click** - open page in the current tab
 - **right click** - dropdown menu to open in current tab or new tab
 
@@ -48,6 +58,7 @@ https://gist.github.com/gesslar/c8ad4e3c52ba3df592e99b5388abf029
 <img width="112" height="75" alt="image" src="https://github.com/user-attachments/assets/bc611710-973b-4918-ac0e-323e5cf6328d" />
 
 <img width="111" height="69" alt="image" src="https://github.com/user-attachments/assets/0183a160-4582-497d-b070-d12918e60b0d" />
+
 
 
 
