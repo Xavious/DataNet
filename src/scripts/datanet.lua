@@ -641,7 +641,16 @@ function datanet.recordPageVisit(tab_id, title, content, command)
   datanet.updateNavigationState(tab_id)
 end
 
--- Initialize DataNet
-datanet.load()
-datanet.container:hide()
+-- Show datanet window
+function datanet.show()
+  datanet.container:show()
+  datanet.container:raiseAll()
+end
 
+-- Hide datanet window
+function datanet.hide()
+  datanet.container:hide()
+end
+
+datanet.load()
+datanet.hide()

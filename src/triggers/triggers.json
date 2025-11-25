@@ -43,6 +43,10 @@
                      {
                             "pattern": "Error: No such page.",
                             "type": "substring"
+                     },
+                     {
+                            "pattern": "Access Denied",
+                            "type": "substring"
                      }
               ],
               "script": ""
@@ -61,7 +65,7 @@
               "highlightBG": "#ffff00",
               "patterns": [
                      {
-                            "pattern": "(?\u003cdata\u003e.*)",
+                            "pattern": "(?<data>.*)",
                             "type": "regex"
                      }
               ],
@@ -81,7 +85,7 @@
               "highlightBG": "#ffff00",
               "patterns": [
                      {
-                            "pattern": "Rewriting as datanet  -c (?<protocol>\\w+) view (?<path>/.*)",
+                            "pattern": "Rewriting as datanet  -c (?<protocol>\\w+) (view|list) (?<path>/.*)",
                             "type": "regex"
                      }
               ],
