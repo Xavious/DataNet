@@ -108,6 +108,12 @@ datanet.state = {
   }
 }
 
+-- Per-character session archive, keyed by character name. Populated from disk by
+-- datanet.loadSessions() during init, so it outlives both character swaps and
+-- client restarts.
+datanet.sessions = {}
+datanet.current_character = nil
+
 -- UI Element References
 datanet.ui = {}
 
@@ -546,6 +552,12 @@ function datanet.addTab(open_in_new)
   -- Create only the new tab (incremental update)
   datanet.createTab(new_id, "")
 
+  -- A recycled tab id reattaches to an existing console, so wipe any leftover text
+  local new_console = datanet.helpers.getTabConsole(new_id)
+  if new_console then
+    new_console:clear()
+  end
+
   -- Switch to new tab if requested
   if open_in_new then
     datanet.setCurrent(new_id)
@@ -595,7 +607,9 @@ function datanet.cleanupTab(id)
   for _, element in ipairs(elements) do
     if element then
       element:hide()
-      -- Note: Geyser elements are automatically cleaned up by Mudlet
+      -- Only hidden, not destroyed: Mudlet keys widgets by name, so recreating a
+      -- tab with the same id reattaches to this same console with its text buffer
+      -- intact. Callers that must not show stale content have to clear it.
     end
   end
 
@@ -639,9 +653,158 @@ function datanet.recordPageVisit(tab_id, title, content, command)
 
   -- Update navigation state
   datanet.updateNavigationState(tab_id)
+
+  datanet.saveSessions()
 end
 
+-- Character Session Management
+
+datanet.save_dir = getMudletHomeDir() .. "/DataNet"
+datanet.save_path = datanet.save_dir .. "/sessions.lua"
+
+-- Fold the live tabs/history back into the archive under the active character.
+-- Must run before any disk write, otherwise the character currently being played
+-- is the one character missing from the saved file.
+function datanet.archiveCurrentCharacter()
+  if not datanet.current_character then return end
+  datanet.sessions[datanet.current_character] = {
+    tabs = datanet.state.tabs,
+    count = datanet.state.count,
+    current = datanet.state.current,
+    last = datanet.state.last,
+    history = datanet.state.history
+  }
+end
+
+function datanet.saveSessions()
+  datanet.archiveCurrentCharacter()
+
+  if not io.exists(datanet.save_dir) then
+    lfs.mkdir(datanet.save_dir)
+  end
+
+  local ok, err = pcall(table.save, datanet.save_path, datanet.sessions)
+  if not ok then
+    debugc("datanet.saveSessions failed: " .. tostring(err))
+  end
+end
+
+function datanet.loadSessions()
+  datanet.sessions = {}
+
+  if not io.exists(datanet.save_path) then
+    debugc("datanet.loadSessions: no saved sessions at " .. datanet.save_path)
+    return
+  end
+
+  local ok, err = pcall(table.load, datanet.save_path, datanet.sessions)
+  if not ok then
+    debugc("datanet.loadSessions failed: " .. tostring(err))
+    datanet.sessions = {}
+  end
+end
+
+-- Reset to a single blank tab with no history (used the first time a character is seen)
+function datanet.resetState()
+  datanet.state.tabs = {""}
+  datanet.state.count = 1
+  datanet.state.current = 1
+  datanet.state.last = 1
+  datanet.state.history = {}
+  datanet.temp_capture = nil
+end
+
+-- Tear down every tab's UI elements without touching datanet.state, so a fresh
+-- state table can be swapped in and rebuilt via datanet.load()
+function datanet.teardownAllTabs()
+  for id, _ in pairs(datanet.state.tabs) do
+    datanet.cleanupTab(id)
+  end
+end
+
+-- Repaint every live tab's console from its own history, clearing stale text first.
+-- Required after a character swap because rebuilt tabs reuse the previous
+-- character's console buffer (see datanet.cleanupTab).
+function datanet.repaintTabsFromHistory()
+  for id, _ in pairs(datanet.state.tabs) do
+    local console = datanet.helpers.getTabConsole(id)
+    local console_name = datanet.helpers.getTabConsoleName(id)
+    if console then
+      console:clear()
+      local history = datanet.state.history[id]
+      local entry = history and history.entries[history.current_index]
+      if entry then
+        if type(entry.content) == "table" then
+          for _, line in ipairs(entry.content) do
+            decho(console_name, line .. "\n")
+          end
+        else
+          decho(console_name, entry.content .. "\n")
+        end
+      end
+    end
+  end
+end
+
+-- Swap the active tabs/history to a different character, archiving the outgoing
+-- character's session in memory so switching back this client run restores it
+function datanet.switchCharacter(character)
+  if not character or character == "" then return end
+  if datanet.current_character == character then
+    return
+  end
+
+  debugc("datanet.switchCharacter: " .. tostring(datanet.current_character) .. " -> " .. tostring(character))
+
+  datanet.archiveCurrentCharacter()
+  datanet.teardownAllTabs()
+
+  local session = datanet.sessions[character]
+  if session then
+    datanet.state.tabs = session.tabs
+    datanet.state.count = session.count
+    datanet.state.current = session.current
+    datanet.state.last = session.last
+    datanet.state.history = session.history
+    datanet.temp_capture = nil
+  else
+    datanet.resetState()
+  end
+
+  datanet.current_character = character
+  datanet.load()
+  datanet.repaintTabsFromHistory()
+
+  -- Opening and closing tabs are not page visits, so the outgoing character may
+  -- have unsaved structural changes
+  datanet.saveSessions()
+end
+
+-- Detect character login/switch via GMCP so DataNet sessions stay isolated per character
+function datanet.onCharacterInfo()
+  if not gmcp or not gmcp.Char or not gmcp.Char.Info or not gmcp.Char.Info.name then
+    debugc("datanet.onCharacterInfo: gmcp.Char.Info.name not available")
+    return
+  end
+  datanet.switchCharacter(gmcp.Char.Info.name)
+end
+
+-- Handler ids live outside the datanet table on purpose: line 2 resets datanet to
+-- {} on every script re-parse, so a guard stored inside it is always nil here and
+-- would stack up a duplicate handler each reload. Registering by function *name*
+-- rather than by value keeps the handler pointing at the current datanet table.
+if datanetCharEventId then
+  killAnonymousEventHandler(datanetCharEventId)
+end
+datanetCharEventId = registerAnonymousEventHandler("gmcp.Char.Info", "datanet.onCharacterInfo")
+
+if datanetExitEventId then
+  killAnonymousEventHandler(datanetExitEventId)
+end
+datanetExitEventId = registerAnonymousEventHandler("sysExitEvent", "datanet.saveSessions")
+
 -- Initialize DataNet
+datanet.loadSessions()
 datanet.load()
 datanet.container:hide()
 
