@@ -419,7 +419,7 @@ function datanet.echoLineWithLinks(console_name, line)
       format .. "<u>" .. link .. "</u>",
       {
         [[send("datanet ]] .. link .. [[")]],
-        [[datanet.addTab(true) send("datanet ]] .. link .. [[")]]
+        [[datanet.addTab(true, false) send("datanet ]] .. link .. [[")]]
       },
       { link, "Open link in new tab" },
       true
@@ -578,7 +578,10 @@ function datanet.load()
   -- Passed explicitly: Mudlet hands click callbacks an event table when no
   -- argument is given, which would read as a truthy open_in_new and arm capture
   -- routing into a tab that is not about to request a page
-  datanet.ui.add_button:setClickCallback("datanet.addTab", false)
+  -- false, true: no capture follows a manually opened blank tab, but asking for
+  -- one is an explicit request to go there. Both passed explicitly because Mudlet
+  -- hands click callbacks an event table when arguments are omitted.
+  datanet.ui.add_button:setClickCallback("datanet.addTab", false, true)
   datanet.ui.add_button:show()
 
   -- Set current tab
@@ -707,17 +710,18 @@ function datanet.selectTab(id)
 end
 
 -- Add new tab without full rebuild
-function datanet.addTab(open_in_new)
-  -- Asking for a new tab means wanting to see it, not the index on top of it
-  datanet.hideCacheIndex()
-
+-- route_capture: point the capture chain at this tab, for callers that send a
+--   command immediately afterwards.
+-- focus: switch to the tab. Links open in the background, so only an explicit
+--   "give me a new tab" focuses.
+-- Returns the new tab id, which background callers need since state.current
+-- deliberately does not move.
+function datanet.addTab(route_capture, focus)
   datanet.state.count = datanet.state.count + 1
   local new_id = datanet.state.count
 
-  -- Add to state. open_in_new means "route the capture that is about to be sent
-  -- into this tab", so it is only ever set by callers that immediately send one.
   datanet.state.tabs[new_id] = ""
-  if open_in_new then
+  if route_capture then
     datanet.state.new_tab = new_id
   end
 
@@ -730,15 +734,18 @@ function datanet.addTab(open_in_new)
     new_console:clear()
   end
 
-  -- Always focus the new tab. setCurrent is the only thing that shows a tab's
-  -- container, so gating this on open_in_new left tabs that existed but never
-  -- rendered until they were clicked.
-  datanet.setCurrent(new_id)
+  if focus then
+    -- Taking focus means leaving the index, not opening a tab behind it
+    datanet.hideCacheIndex()
+    datanet.setCurrent(new_id)
+  end
 
   -- Freshly created Geyser widgets are not drawn until the container raises, so
   -- an incrementally added tab shows as empty window background. The capture path
   -- never hit this because disableGetData ends with its own raiseAll().
   datanet.container:raiseAll()
+
+  return new_id
 end
 
 -- Close tab with proper cleanup
@@ -994,8 +1001,7 @@ end
 -- Fetch a live copy into a new tab. Unlike openFromCache this leaves new_tab
 -- armed, because a capture does follow and needs it to find the tab.
 function datanet.fetchInNewTab(url)
-  datanet.hideCacheIndex()
-  datanet.addTab(true)
+  datanet.addTab(true, false)
   send("datanet " .. url)
 end
 
@@ -1007,14 +1013,9 @@ function datanet.openFromCache(url)
     return
   end
 
-  -- Must happen before load(), which re-derives overlay visibility
-  datanet.hideCacheIndex()
-
-  -- false: nothing is being captured here, so the capture chain must not be
-  -- pointed at this tab
-  datanet.addTab(false)
-
-  local tab_id = datanet.state.current
+  -- Nothing is captured here, so the capture chain must not be pointed at this
+  -- tab, and the page opens behind whatever the player is looking at
+  local tab_id = datanet.addTab(false, false)
   local console = datanet.helpers.getTabConsole(tab_id)
   local console_name = datanet.helpers.getTabConsoleName(tab_id)
 
@@ -1027,8 +1028,9 @@ function datanet.openFromCache(url)
   datanet.helpers.addHistoryEntry(tab_id, title, nil, "datanet " .. url)
   datanet.state.tabs[tab_id] = title
 
+  -- No updateNavigationState for tab_id: the nav buttons belong to whatever tab
+  -- still has focus, and load() refreshes them for state.current
   datanet.load()
-  datanet.updateNavigationState(tab_id)
   datanet.saveSessions()
 end
 
