@@ -19,5 +19,12 @@
               "regex": "^resetdata$",
               "script": "",
               "isFolder": "no"
+       },
+       {
+              "name": "dataCache",
+              "isActive": "yes",
+              "regex": "^datacache$",
+              "script": "",
+              "isFolder": "no"
        }
 ]

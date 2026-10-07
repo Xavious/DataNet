@@ -16,6 +16,9 @@ datanet.config = {
     content_y = "8%",
     content_height = "92%",
     tab_spacing = "1px"
+  },
+  cache = {
+    max_entries = 200
   }
 }
 
@@ -104,7 +107,19 @@ datanet.state = {
   -- History tracking for each tab
   history = {
     -- Structure: [tab_id] = { entries = {...}, current_index = 1, max_size = 50 }
-    -- Each entry: { title = "page title", content = "cached content", timestamp = os.time(), command = "datanet xyz" }
+    -- Each entry: { url = "news:/foo", title = "page title", timestamp = os.time(), command = "datanet news:/foo" }
+    -- Entries hold no content; it lives in state.cache keyed by url. Pre-phase-3
+    -- entries kept content inline, which datanet.helpers.getEntryContent still reads.
+  },
+
+  -- Page cache, keyed by url. The index UI lists this, and it is what makes
+  -- offline browsing possible. Separate from history because history is a
+  -- navigation stack: it truncates forward entries and caps at max_size, so it
+  -- loses pages through normal browsing.
+  -- Revisiting a url overwrites its content, so going back to an older visit of
+  -- the same url shows the newer body. Browsers behave the same way.
+  cache = {
+    -- Structure: [url] = { title = "page title", content = {...}, timestamp = os.time() }
   }
 }
 
@@ -152,6 +167,83 @@ datanet.helpers = {
     end
   end,
 
+  -- Cache helpers
+
+  urlFromCommand = function(command)
+    if type(command) ~= "string" then return nil end
+    return command:match("^datanet%s+(.+)$")
+  end,
+
+  cachePut = function(url, title, content)
+    if not url then return end
+    datanet.state.cache[url] = {
+      title = title or "",
+      content = content,
+      timestamp = os.time()
+    }
+    datanet.helpers.pruneCache()
+  end,
+
+  cacheGet = function(url)
+    if not url then return nil end
+    return datanet.state.cache[url]
+  end,
+
+  -- mode is "url" for alphabetical, anything else for newest-first. pairs() order
+  -- is not preserved across table.save/table.load, so sorting here is
+  -- load-bearing, not cosmetic.
+  cacheList = function(mode)
+    local list = {}
+    for url, page in pairs(datanet.state.cache) do
+      table.insert(list, {
+        url = url,
+        title = page.title,
+        timestamp = page.timestamp or 0
+      })
+    end
+
+    if mode == "url" then
+      table.sort(list, function(a, b) return a.url < b.url end)
+    else
+      table.sort(list, function(a, b) return a.timestamp > b.timestamp end)
+    end
+
+    return list
+  end,
+
+  -- Trim to config.cache.max_entries, oldest first. A url a live history entry
+  -- still points at is never evicted, or going back would render it blank.
+  pruneCache = function()
+    local max = datanet.config.cache.max_entries
+    -- Explicitly date-ordered: eviction drops the oldest, so it must not inherit
+    -- whatever ordering the index happens to be displaying.
+    local list = datanet.helpers.cacheList("date")
+    if #list <= max then return end
+
+    local referenced = {}
+    for _, history in pairs(datanet.state.history) do
+      for _, entry in ipairs(history.entries or {}) do
+        if entry.url then referenced[entry.url] = true end
+      end
+    end
+
+    for i = #list, max + 1, -1 do
+      local url = list[i].url
+      if not referenced[url] then
+        datanet.state.cache[url] = nil
+      end
+    end
+  end,
+
+  -- Resolves an entry's page body from the cache, falling back to the inline
+  -- content that pre-phase-3 entries carried.
+  getEntryContent = function(entry)
+    if not entry then return "" end
+    if entry.content then return entry.content end
+    local page = datanet.state.cache[entry.url]
+    return (page and page.content) or ""
+  end,
+
   addHistoryEntry = function(id, title, content, command)
     debugc("addHistoryEntry called for tab " .. tostring(id))
     local history = datanet.state.history[id]
@@ -161,13 +253,26 @@ datanet.helpers = {
       history = datanet.state.history[id]
     end
 
-    -- Create new entry
+    -- Content goes to the url-keyed cache instead of into the entry, so a url
+    -- open in several tabs is stored once. A command with no recoverable url
+    -- (the bare "datanet" fallback) has nowhere to key off, so it keeps content
+    -- inline and getEntryContent reads it back from there.
+    local url = datanet.helpers.urlFromCommand(command)
+    local has_content = (type(content) == "table" and next(content) ~= nil)
+      or (type(content) == "string" and content ~= "")
+
     local entry = {
+      url = url,
       title = title or "Untitled",
-      content = content or "",
       timestamp = os.time(),
       command = command or ""
     }
+
+    if url and has_content then
+      datanet.helpers.cachePut(url, entry.title, content)
+    elseif not url then
+      entry.content = content or ""
+    end
 
     -- Remove any forward history (like browsers do)
     for i = history.current_index + 1, #history.entries do
@@ -228,6 +333,19 @@ datanet.container = Adjustable.Container:new({
   padding = 10
 })
 
+-- Paint a history entry's page body into a console. Does not clear it — callers
+-- decide that, since some are repainting a console they just cleared themselves.
+function datanet.renderEntry(console_name, entry)
+  local content = datanet.helpers.getEntryContent(entry)
+  if type(content) == "table" then
+    for _, line in ipairs(content) do
+      datanet.echoLineWithLinks(console_name, line)
+    end
+  else
+    datanet.echoLineWithLinks(console_name, content)
+  end
+end
+
 -- Navigation Functions
 function datanet.goBack()
   debugc("datanet.goBack() called")
@@ -247,15 +365,7 @@ function datanet.goBack()
     local console_name = datanet.helpers.getTabConsoleName(current_id)
     if console then
       console:clear()
-      if type(entry.content) == "table" then
-        for _, line in ipairs(entry.content) do
-          -- Echo line normally for testing
-          decho(console_name, line .. "\n")
-        end
-      else
-        -- Echo single content normally for testing
-        decho(console_name, entry.content .. "\n")
-      end
+      datanet.renderEntry(console_name, entry)
     end
 
     -- Update tab title
@@ -268,45 +378,57 @@ function datanet.goBack()
   datanet.updateNavigationState(current_id)
 end
 
--- Echo a line to console, replacing datanet links with clickable links
+-- Mirrors the datanetLink trigger's pattern (triggers.json): a protocol of word
+-- characters, then a slash-led path. The previous replay pattern rejected digits
+-- in the protocol, so links like holo2:/foo stayed plain text even when replay
+-- did try to linkify them.
+datanet.link_pattern = "%a[%w_]*:/[%w_/]+"
+
+-- Echo one captured line, splicing clickable links in place.
+--
+-- Mudlet triggers only fire on live game output, so a page replayed from cache or
+-- history never passes through the datanetLink trigger and would otherwise render
+-- its links as dead text. The popup actions here are deliberately identical to
+-- that trigger's, so a replayed page behaves exactly like a freshly loaded one.
 function datanet.echoLineWithLinks(console_name, line)
-  if not line or type(line) ~= "string" then return end
-
-  debugc("echoLineWithLinks called with line: " .. line)
-
-  -- Simple pattern to find datanet links
-  local link_pattern = "([A-Za-z][A-Za-z]*:[/][%w/_%.-]+)"
-
-  -- Check if line contains any links
-  local has_links = string.match(line, link_pattern)
-
-  if has_links then
-    debugc("Line contains links, processing...")
-    local processed_line = line
-
-    -- Remove all links from the line
-    for link in string.gmatch(line, link_pattern) do
-      debugc("Found link: '" .. link .. "'")
-      processed_line = string.gsub(processed_line, link, "", 1)
-    end
-
-    -- Echo the line without links
-    decho(console_name, processed_line)
-
-    -- Add clickable underlined links
-    for link in string.gmatch(line, link_pattern) do
-      local clickable_text = "<u>" .. link .. "</u>"
-      local command = [[send("datanet ]] .. link .. [[")]]
-      debugc("Creating clickable link - Text: '" .. clickable_text .. "', Command: '" .. command .. "'")
-      dechoLink(console_name, clickable_text, command, link, true)
-    end
-
-    echo(console_name, "\n")
-  else
-    debugc("No links found in line, echoing normally")
-    -- No links, just echo the line normally
-    decho(console_name, line .. "\n")
+  if type(line) ~= "string" then
+    decho(console_name, "\n")
+    return
   end
+
+  local pos = 1
+  -- Formatting does not carry across separate decho calls, and the colour tag
+  -- governing a link is the last one in the text *before* it. Splitting the line
+  -- therefore strands that tag in the previous call, so track it and re-state it
+  -- inside the link's own text and in the remainder after it.
+  local format = ""
+
+  while true do
+    local link_start, link_end = string.find(line, datanet.link_pattern, pos)
+    if not link_start then break end
+
+    if link_start > pos then
+      local prefix = string.sub(line, pos, link_start - 1)
+      decho(console_name, prefix)
+      format = string.match(prefix, "^.*(<[^<>]+>)") or format
+    end
+
+    local link = string.sub(line, link_start, link_end)
+    dechoPopup(
+      console_name,
+      format .. "<u>" .. link .. "</u>",
+      {
+        [[send("datanet ]] .. link .. [[")]],
+        [[datanet.addTab(true) send("datanet ]] .. link .. [[")]]
+      },
+      { link, "Open link in new tab" },
+      true
+    )
+
+    pos = link_end + 1
+  end
+
+  decho(console_name, format .. string.sub(line, pos) .. "\n")
 end
 
 function datanet.refresh()
@@ -345,15 +467,7 @@ function datanet.goForward()
     local console_name = datanet.helpers.getTabConsoleName(current_id)
     if console then
       console:clear()
-      if type(entry.content) == "table" then
-        for _, line in ipairs(entry.content) do
-          -- Echo line normally for testing
-          decho(console_name, line .. "\n")
-        end
-      else
-        -- Echo single content normally for testing
-        decho(console_name, entry.content .. "\n")
-      end
+      datanet.renderEntry(console_name, entry)
     end
 
     -- Update tab title
@@ -404,12 +518,24 @@ function datanet.load()
   datanet.ui.refresh_button:setClickCallback("datanet.refresh")
   datanet.ui.refresh_button:show()
 
+  datanet.ui.index_button = Geyser.Label:new({
+    name = "datanet.index_button",
+    x = "9%",
+    y = datanet.config.layout.tabs_y,
+    width = "3%",
+    height = datanet.config.layout.tabs_height
+  }, datanet.container)
+  datanet.ui.index_button:setStyleSheet(datanet.styles.tab.normal)
+  datanet.ui.index_button:echo("<center>☰")
+  datanet.ui.index_button:setClickCallback("datanet.toggleCacheIndex")
+  datanet.ui.index_button:show()
+
   -- Create tabs container for tab buttons (adjusted for navigation buttons)
   datanet.ui.tabs = Geyser.HBox:new({
     name = "datanet.tabs",
-    x = "9%", -- Start after navigation buttons (3% + 3% + 3%)
+    x = "12%", -- Start after navigation buttons (3% + 3% + 3% + 3%)
     y = datanet.config.layout.tabs_y,
-    width = "87%", -- 96% - 9% nav buttons = 87% for tabs
+    width = "84%", -- 96% - 12% nav buttons = 84% for tabs
     height = datanet.config.layout.tabs_height
   }, datanet.container)
 
@@ -427,6 +553,18 @@ function datanet.load()
     datanet.createTab(k, v)
   end
 
+  -- Cache index overlay. Layered over the tab consoles rather than being a tab,
+  -- so it stays out of state.tabs, out of history, and out of the save file.
+  datanet.ui.cache_console = Geyser.MiniConsole:new({
+    name = "datanet.cache_index",
+    x = 0, y = 0,
+    width = "100%", height = "100%",
+    autoWrap = true,
+    color = "black",
+    scrollBar = true,
+    fontSize = datanet.config.font_size
+  }, datanet.ui.content)
+
   -- Create add button
   datanet.ui.add_button = Geyser.Label:new({
     name = "datanet.add_button",
@@ -437,11 +575,28 @@ function datanet.load()
   }, datanet.container)
   datanet.ui.add_button:setStyleSheet(datanet.styles.tab.add_button)
   datanet.ui.add_button:echo("<center>✚")
-  datanet.ui.add_button:setClickCallback("datanet.addTab")
+  -- Passed explicitly: Mudlet hands click callbacks an event table when no
+  -- argument is given, which would read as a truthy open_in_new and arm capture
+  -- routing into a tab that is not about to request a page
+  datanet.ui.add_button:setClickCallback("datanet.addTab", false)
   datanet.ui.add_button:show()
 
   -- Set current tab
   datanet.setCurrent(datanet.state.current)
+
+  -- Everything above was just (re)created, and Geyser does not draw new widgets
+  -- until the container raises. disableGetData does this itself after a capture,
+  -- which is why only the non-capture callers of load() showed blank panels.
+  datanet.container:raiseAll()
+
+  -- load() runs after every page visit and Geyser reuses widgets by name, so the
+  -- overlay's visibility has to be re-derived here rather than assumed. A nil
+  -- flag after a script re-parse means closed.
+  if datanet.cache_visible then
+    datanet.showCacheIndex()
+  else
+    datanet.hideCacheIndex()
+  end
 end
 
 -- Create a single tab with all its components
@@ -496,6 +651,24 @@ function datanet.createTab(id, content)
   datanet.ui["tab_console_" .. id] = console
 end
 
+-- Style the tab buttons and the index button as one group, so the index reads as
+-- a peer of the tabs: whatever is currently on screen is active, everything else
+-- is normal.
+function datanet.updateTabStyles()
+  for id, _ in pairs(datanet.state.tabs) do
+    local button = datanet.helpers.getTabButton(id)
+    if button then
+      local selected = not datanet.cache_visible and id == datanet.state.current
+      button:setStyleSheet(selected and datanet.styles.tab.active or datanet.styles.tab.normal)
+    end
+  end
+
+  if datanet.ui.index_button then
+    datanet.ui.index_button:setStyleSheet(
+      datanet.cache_visible and datanet.styles.tab.active or datanet.styles.tab.normal)
+  end
+end
+
 -- Set current tab with proper styling
 function datanet.setCurrent(id)
   if not datanet.helpers.isValidTab(id) then
@@ -508,26 +681,19 @@ function datanet.setCurrent(id)
     current_container:hide()
   end
 
-  -- Update button styling
-  local current_button = datanet.helpers.getTabButton(datanet.state.current)
-  if current_button then
-    current_button:setStyleSheet(datanet.styles.tab.normal)
-  end
-
-  local new_button = datanet.helpers.getTabButton(id)
-  if new_button then
-    new_button:setStyleSheet(datanet.styles.tab.active)
-  end
-
   -- Update state
   datanet.state.last = datanet.state.current
   datanet.state.current = id
 
-  -- Show new tab
+  -- Show new tab, unless the cache index is overlaying it. addTab() creates tab
+  -- containers after the overlay already exists, so a newly created container
+  -- would otherwise be stacked on top of it and hide it.
   local new_container = datanet.helpers.getTabContainer(id)
-  if new_container then
+  if new_container and not datanet.cache_visible then
     new_container:show()
   end
+
+  datanet.updateTabStyles()
 
   -- Update navigation buttons and address bar
   datanet.updateNavigationState(id)
@@ -535,15 +701,21 @@ end
 
 -- Tab selection callback
 function datanet.selectTab(id)
+  -- Picking a tab means wanting to see it, not the index sitting on top of it
+  datanet.hideCacheIndex()
   datanet.setCurrent(id)
 end
 
 -- Add new tab without full rebuild
 function datanet.addTab(open_in_new)
+  -- Asking for a new tab means wanting to see it, not the index on top of it
+  datanet.hideCacheIndex()
+
   datanet.state.count = datanet.state.count + 1
   local new_id = datanet.state.count
 
-  -- Add to state
+  -- Add to state. open_in_new means "route the capture that is about to be sent
+  -- into this tab", so it is only ever set by callers that immediately send one.
   datanet.state.tabs[new_id] = ""
   if open_in_new then
     datanet.state.new_tab = new_id
@@ -558,10 +730,15 @@ function datanet.addTab(open_in_new)
     new_console:clear()
   end
 
-  -- Switch to new tab if requested
-  if open_in_new then
-    datanet.setCurrent(new_id)
-  end
+  -- Always focus the new tab. setCurrent is the only thing that shows a tab's
+  -- container, so gating this on open_in_new left tabs that existed but never
+  -- rendered until they were clicked.
+  datanet.setCurrent(new_id)
+
+  -- Freshly created Geyser widgets are not drawn until the container raises, so
+  -- an incrementally added tab shows as empty window background. The capture path
+  -- never hit this because disableGetData ends with its own raiseAll().
+  datanet.container:raiseAll()
 end
 
 -- Close tab with proper cleanup
@@ -641,6 +818,220 @@ function datanet.updateNavigationState(tab_id)
 
 end
 
+-- Cache Index UI
+
+function datanet.renderCacheIndex()
+  local console = datanet.ui.cache_console
+  if not console then return end
+  local console_name = "datanet.cache_index"
+
+  console:clear()
+
+  local mode = datanet.cache_sort or "date"
+  local pages = datanet.helpers.cacheList(mode)
+  if #pages == 0 then
+    decho(console_name, "<200,200,200>No cached pages yet.\n")
+    return
+  end
+
+  decho(console_name, "<255,255,255>Cached pages (" .. #pages .. ")\n")
+
+  -- The active mode renders as plain text rather than a link, so it reads as
+  -- selected and clicking it is a no-op
+  local function sortLink(label, value)
+    if mode == value then
+      decho(console_name, "<255,255,255>[" .. label .. "]")
+    else
+      dechoLink(
+        console_name,
+        "<120,200,255>[" .. label .. "]",
+        [[datanet.setCacheSort("]] .. value .. [[")]],
+        "Sort by " .. label:lower(),
+        true
+      )
+    end
+    decho(console_name, " ")
+  end
+
+  decho(console_name, "<140,140,140>Sort: ")
+  sortLink("Date", "date")
+  sortLink("URL", "url")
+
+  if datanet.cache_confirm then
+    decho(console_name, "\n<255,180,180>Clear " .. #pages .. " cached page(s), all history and all tabs? ")
+    dechoLink(
+      console_name,
+      "<255,120,120>[Yes]",
+      "datanet.clearCache()",
+      "Permanently clear this character's cache, history and tabs",
+      true
+    )
+    decho(console_name, " ")
+    dechoLink(
+      console_name,
+      "<120,200,255>[Cancel]",
+      "datanet.cancelClearCache()",
+      "Keep everything",
+      true
+    )
+  else
+    decho(console_name, " ")
+    dechoLink(
+      console_name,
+      "<200,160,160>[Clear]",
+      "datanet.confirmClearCache()",
+      "Clear this character's cache, history and tabs",
+      true
+    )
+  end
+
+  decho(console_name, "\n\n")
+
+  for _, page in ipairs(pages) do
+    -- An empty-string title is truthy in Lua, so a plain `or` guard misses it
+    local label = (page.title and page.title:match("%S")) and page.title or page.url
+    decho(console_name, "<200,200,200>" .. label .. "\n")
+
+    dechoLink(
+      console_name,
+      "<120,200,255><u>" .. page.url .. "</u>",
+      [[datanet.openFromCache("]] .. page.url .. [[")]],
+      "Open cached copy: " .. page.url,
+      true
+    )
+    decho(console_name, "  ")
+    dechoLink(
+      console_name,
+      "<160,160,160>[↻]",
+      [[datanet.fetchInNewTab("]] .. page.url .. [[")]],
+      "Fetch a live copy in a new tab: " .. page.url,
+      true
+    )
+    decho(console_name, "<100,100,100>  " .. os.date("%Y-%m-%d %H:%M", page.timestamp) .. "\n\n")
+  end
+end
+
+-- A view preference only, so it is deliberately not persisted and resets to date
+-- ordering on a script re-parse.
+function datanet.setCacheSort(mode)
+  datanet.cache_sort = mode
+  datanet.renderCacheIndex()
+end
+
+function datanet.confirmClearCache()
+  datanet.cache_confirm = true
+  datanet.renderCacheIndex()
+end
+
+function datanet.cancelClearCache()
+  datanet.cache_confirm = nil
+  datanet.renderCacheIndex()
+end
+
+-- Wipe this character's page cache, history and tabs, back to one blank tab.
+-- Other characters' archived sessions are untouched. Irreversible:
+-- saveSessions() writes straight through with no debounce, so the on-disk copy
+-- goes with it. That is why the index header confirms first.
+function datanet.clearCache()
+  datanet.teardownAllTabs()
+  datanet.resetState()
+
+  datanet.cache_confirm = nil
+  datanet.load()
+  -- Geyser reuses consoles by name, so the surviving tab still holds the text of
+  -- whatever page was last shown in it
+  datanet.repaintTabsFromHistory()
+  datanet.saveSessions()
+
+  cecho("\n[<cyan>DataNet<reset>] Cache and history cleared for <yellow>"
+    .. tostring(datanet.current_character or "this character") .. "<reset>")
+end
+
+function datanet.showCacheIndex()
+  datanet.cache_visible = true
+  datanet.renderCacheIndex()
+
+  local container = datanet.helpers.getTabContainer(datanet.state.current)
+  if container then
+    container:hide()
+  end
+
+  if datanet.ui.cache_console then
+    datanet.ui.cache_console:show()
+  end
+
+  datanet.updateTabStyles()
+end
+
+function datanet.hideCacheIndex()
+  datanet.cache_visible = false
+  -- Never leave a pending confirm armed for the next time the index opens
+  datanet.cache_confirm = nil
+
+  if datanet.ui.cache_console then
+    datanet.ui.cache_console:hide()
+  end
+
+  local container = datanet.helpers.getTabContainer(datanet.state.current)
+  if container then
+    container:show()
+  end
+
+  datanet.updateTabStyles()
+end
+
+function datanet.toggleCacheIndex()
+  if datanet.cache_visible then
+    datanet.hideCacheIndex()
+  else
+    datanet.showCacheIndex()
+  end
+end
+
+-- Open a cached page in the current tab without sending anything to the game,
+-- so it costs no charge and works while offline. Falls back to a live fetch on
+-- a cache miss.
+-- Fetch a live copy into a new tab. Unlike openFromCache this leaves new_tab
+-- armed, because a capture does follow and needs it to find the tab.
+function datanet.fetchInNewTab(url)
+  datanet.hideCacheIndex()
+  datanet.addTab(true)
+  send("datanet " .. url)
+end
+
+function datanet.openFromCache(url)
+  local page = datanet.helpers.cacheGet(url)
+  if not page then
+    debugc("datanet.openFromCache: miss for " .. tostring(url) .. ", fetching live")
+    datanet.fetchInNewTab(url)
+    return
+  end
+
+  -- Must happen before load(), which re-derives overlay visibility
+  datanet.hideCacheIndex()
+
+  -- false: nothing is being captured here, so the capture chain must not be
+  -- pointed at this tab
+  datanet.addTab(false)
+
+  local tab_id = datanet.state.current
+  local console = datanet.helpers.getTabConsole(tab_id)
+  local console_name = datanet.helpers.getTabConsoleName(tab_id)
+
+  if console then
+    console:clear()
+    datanet.renderEntry(console_name, { url = url })
+  end
+
+  local title = (page.title and page.title:match("%S")) and page.title or url
+  datanet.helpers.addHistoryEntry(tab_id, title, nil, "datanet " .. url)
+  datanet.state.tabs[tab_id] = title
+
+  datanet.load()
+  datanet.updateNavigationState(tab_id)
+  datanet.saveSessions()
+end
+
 -- Record a new page visit (called by triggers)
 function datanet.recordPageVisit(tab_id, title, content, command)
   debugc("datanet.recordPageVisit called with tab_id: " .. tostring(tab_id))
@@ -666,13 +1057,20 @@ datanet.save_path = datanet.save_dir .. "/sessions.lua"
 -- Must run before any disk write, otherwise the character currently being played
 -- is the one character missing from the saved file.
 function datanet.archiveCurrentCharacter()
-  if not datanet.current_character then return end
+  if not datanet.current_character then
+    -- Live state has nowhere to go, so a save here would persist whatever was
+    -- last loaded and quietly discard everything since
+    debugc("datanet.archiveCurrentCharacter: no current character, nothing archived")
+    return
+  end
   datanet.sessions[datanet.current_character] = {
     tabs = datanet.state.tabs,
     count = datanet.state.count,
     current = datanet.state.current,
     last = datanet.state.last,
-    history = datanet.state.history
+    history = datanet.state.history,
+    cache = datanet.state.cache,
+    schema = 1
   }
 end
 
@@ -685,7 +1083,9 @@ function datanet.saveSessions()
 
   local ok, err = pcall(table.save, datanet.save_path, datanet.sessions)
   if not ok then
-    debugc("datanet.saveSessions failed: " .. tostring(err))
+    -- Loud on purpose: a silently failing save looks identical to a working one
+    -- until the next restart, by which point the data is gone
+    cecho("\n[<cyan>DataNet<reset>] <red>Could not save sessions<reset>: " .. tostring(err))
   end
 end
 
@@ -697,10 +1097,57 @@ function datanet.loadSessions()
     return
   end
 
-  local ok, err = pcall(table.load, datanet.save_path, datanet.sessions)
+  -- Mudlet fills the table passed in and returns nothing; some versions return
+  -- the loaded table instead. Accept either rather than depending on one.
+  local target = {}
+  local ok, result = pcall(table.load, datanet.save_path, target)
+
   if not ok then
-    debugc("datanet.loadSessions failed: " .. tostring(err))
+    cecho("\n[<cyan>DataNet<reset>] <red>Could not read saved sessions<reset>: " .. tostring(result))
     datanet.sessions = {}
+    return
+  end
+
+  if type(result) == "table" and next(result) ~= nil then
+    datanet.sessions = result
+  else
+    datanet.sessions = target
+  end
+
+  datanet.migrateSessions()
+end
+
+-- Pre-phase-3 sessions stored each page's body inline on its history entry and
+-- had no cache at all. Backfill the cache from that content so previously
+-- visited pages show up in the index, then drop the inline copy. Lossless --
+-- the content is already on disk, it just moves.
+function datanet.migrateSessions()
+  for character, session in pairs(datanet.sessions) do
+    if session.schema ~= 1 then
+      session.cache = session.cache or {}
+
+      for _, history in pairs(session.history or {}) do
+        for _, entry in ipairs(history.entries or {}) do
+          local url = datanet.helpers.urlFromCommand(entry.command)
+          if url then
+            entry.url = url
+            local existing = session.cache[url]
+            local stamp = entry.timestamp or 0
+            if entry.content and (not existing or stamp >= (existing.timestamp or 0)) then
+              session.cache[url] = {
+                title = entry.title or "",
+                content = entry.content,
+                timestamp = stamp
+              }
+            end
+            entry.content = nil
+          end
+        end
+      end
+
+      session.schema = 1
+      debugc("datanet.migrateSessions: migrated " .. tostring(character))
+    end
   end
 end
 
@@ -711,6 +1158,10 @@ function datanet.resetState()
   datanet.state.current = 1
   datanet.state.last = 1
   datanet.state.history = {}
+  datanet.state.cache = {}
+  -- Would otherwise point at a tab id that no longer exists, and the next
+  -- capture targets whatever it names
+  datanet.state.new_tab = nil
   datanet.temp_capture = nil
 end
 
@@ -734,13 +1185,7 @@ function datanet.repaintTabsFromHistory()
       local history = datanet.state.history[id]
       local entry = history and history.entries[history.current_index]
       if entry then
-        if type(entry.content) == "table" then
-          for _, line in ipairs(entry.content) do
-            decho(console_name, line .. "\n")
-          end
-        else
-          decho(console_name, entry.content .. "\n")
-        end
+        datanet.renderEntry(console_name, entry)
       end
     end
   end
@@ -754,7 +1199,8 @@ function datanet.switchCharacter(character)
     return
   end
 
-  debugc("datanet.switchCharacter: " .. tostring(datanet.current_character) .. " -> " .. tostring(character))
+  local outgoing = datanet.current_character
+  debugc("datanet.switchCharacter: " .. tostring(outgoing) .. " -> " .. tostring(character))
 
   datanet.archiveCurrentCharacter()
   datanet.teardownAllTabs()
@@ -766,6 +1212,7 @@ function datanet.switchCharacter(character)
     datanet.state.current = session.current
     datanet.state.last = session.last
     datanet.state.history = session.history
+    datanet.state.cache = session.cache or {}
     datanet.temp_capture = nil
   else
     datanet.resetState()
@@ -775,9 +1222,13 @@ function datanet.switchCharacter(character)
   datanet.load()
   datanet.repaintTabsFromHistory()
 
-  -- Opening and closing tabs are not page visits, so the outgoing character may
-  -- have unsaved structural changes
-  datanet.saveSessions()
+  -- Save only when there was something real to persist: an outgoing character
+  -- whose tab changes were not page visits, or a restored session. A first-seen
+  -- character starts blank, and writing that blank state immediately is what let
+  -- a failed load destroy the save file. Its first page visit will save anyway.
+  if outgoing or session then
+    datanet.saveSessions()
+  end
 end
 
 -- Detect character login/switch via GMCP so DataNet sessions stay isolated per character
@@ -806,5 +1257,12 @@ datanetExitEventId = registerAnonymousEventHandler("sysExitEvent", "datanet.save
 -- Initialize DataNet
 datanet.loadSessions()
 datanet.load()
+
+-- Re-establish the character from the gmcp table already in memory. A script
+-- re-parse (package reinstall, profile reload) resets current_character to nil,
+-- and no fresh gmcp.Char.Info arrives while already connected -- leaving every
+-- later save archiving nothing and silently rewriting stale state.
+datanet.onCharacterInfo()
+
 datanet.container:hide()
 

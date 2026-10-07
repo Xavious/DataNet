@@ -42,6 +42,10 @@ end
 
 -- Clear new tab flag
 datanet.state.new_tab = nil
+
+-- current_command is otherwise never cleared, so a later capture that never
+-- fires enableGetData would be filed under the previous page's url
+datanet.current_command = nil
 cecho("\n[<cyan>DataNet<reset>] Page loaded. Toggle window display with <yellow>showdata<reset> and <yellow>hidedata<reset>")
 cecho("\n[<cyan>DataNet<reset>] Use <red>resetdata<reset> to reset capture triggers if the buffer breaks")
 
