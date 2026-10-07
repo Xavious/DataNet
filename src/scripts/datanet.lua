@@ -1050,6 +1050,37 @@ function datanet.recordPageVisit(tab_id, title, content, command)
   datanet.saveSessions()
 end
 
+-- Window and capture-state controls. The showdata/hidedata/resetdata aliases and
+-- the clickable links in the page-loaded notice both call these, so the behaviour
+-- has one definition rather than two that drift.
+
+function datanet.show()
+  datanet.container:show()
+  datanet.container:raiseAll()
+end
+
+function datanet.hide()
+  datanet.container:hide()
+end
+
+-- Re-arm the idle trigger state. The capture chain depends on exactly one stage's
+-- target trigger being enabled at a time, so an interrupted capture can leave it
+-- stuck with no way back.
+function datanet.reset()
+  enableTrigger('datanetLink')
+  enableTrigger('endCapture')
+  enableTrigger('enableGetData')
+
+  disableTrigger('getData')
+  disableTrigger('disableGetData')
+  disableTrigger('enableDisableGetData')
+
+  -- An interrupted capture can leave a url armed, which the next page would be
+  -- filed under
+  datanet.current_command = nil
+  datanet.temp_capture = nil
+end
+
 -- Character Session Management
 
 datanet.save_dir = getMudletHomeDir() .. "/DataNet"

@@ -46,12 +46,21 @@ datanet.state.new_tab = nil
 -- current_command is otherwise never cleared, so a later capture that never
 -- fires enableGetData would be filed under the previous page's url
 datanet.current_command = nil
-cecho("\n[<cyan>DataNet<reset>] Page loaded. Toggle window display with <yellow>showdata<reset> and <yellow>hidedata<reset>")
-cecho("\n[<cyan>DataNet<reset>] Use <red>resetdata<reset> to reset capture triggers if the buffer breaks")
+
+-- dechoLink rather than cechoLink: cecho has no underline tag, and the links need
+-- to read as clickable. Colours are the rgb equivalents of the yellow/red these
+-- words used to be.
+cecho("\n[<cyan>DataNet<reset>] Page loaded. Toggle window display with ")
+dechoLink("<255,255,0><u>showdata</u>", "datanet.show()", "Show the DataNet window", true)
+cecho(" and ")
+dechoLink("<255,255,0><u>hidedata</u>", "datanet.hide()", "Hide the DataNet window", true)
+
+cecho("\n[<cyan>DataNet<reset>] Use ")
+dechoLink("<255,0,0><u>resetdata</u>", "datanet.reset()", "Re-arm the capture triggers", true)
+cecho(" to reset capture triggers if the buffer breaks")
 
 disableTrigger('getData')
 disableTrigger('disableGetData')
 disableTrigger('enableDisableGetData')
 enableTrigger('enableGetData')
-datanet.container:show()
-datanet.container:raiseAll()
+datanet.show()
