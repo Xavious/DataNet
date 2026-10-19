@@ -1,7 +1,1 @@
-enableTrigger('datanetLink')
-enableTrigger('endCapture')
-enableTrigger('enableGetData')
-
-disableTrigger('getData')
-disableTrigger('disableGetData')
-disableTrigger('enableDisableGetData')
+datanet.reset()

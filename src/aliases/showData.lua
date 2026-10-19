@@ -1,2 +1,1 @@
-datanet.container:show()
-datanet.container:raiseAll()
+datanet.show()
