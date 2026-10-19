@@ -8,7 +8,7 @@ A web browser inspired Mudlet package for Legends of the Jedi (LOTJ)
 
 Download the latest .mpackage file from the release page and install it like any other Mudlet package.
 
-https://github.com/Xavious/DataNet/releases/tag/v1.0.0
+https://github.com/Xavious/DataNet/releases/tag/v1.2.0
 
 Once installed you use it by clicking datanet links that you see in the game. The browser will automatically popup.
 
